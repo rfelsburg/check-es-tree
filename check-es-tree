@@ -126,8 +126,8 @@ if ($o_help || $o_verbose) {
         print '              "total" : 168506,', "\n";
         print '              "max_score" : 1.0,', "\n";
         print '              "hits" : [ {', "\n";
-        print '                  "_index" : "index",', "\n";
-        print '                  "_type" : "type",', "\n";
+        print '                  "_index" : "myindex",', "\n";
+        print '                  "_type" : "mytype",', "\n";
         print '                  "_id" : "1",', "\n";
         print '                  "_score" : 1.0, "_source" : {"name":"test1000"}', "\n";
         print '              }]', "\n";
