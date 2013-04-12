@@ -1,0 +1,267 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+check-es-tree - Bloonix plugin to check elasticsearch data.
+
+=head1 SYNOPSIS
+
+    check-es-tree [ OPTIONS ]
+
+    check-es-tree --help
+
+=head1 REPORTING BUGS
+
+Please report all bugs to <support(at)bloonix.de>.
+
+=head1 AUTHOR
+
+Jonny Schulz <support(at)bloonix.de>.
+
+=head1 POWERED BY
+
+     _    __ _____ _____ __  __ __ __   __
+    | |__|  |     |     |  \|  |__|\  \/  /
+    |  . |  |  |  |  |  |      |  | >    <
+    |____|__|_____|_____|__|\__|__|/__/\__\
+
+=head1 COPYRIGHT
+
+Copyright (C) 2013 by Jonny Schulz. All rights reserved.
+
+=cut
+
+use strict;
+use warnings;
+use Getopt::Long qw(:config no_ignore_case);
+use LWP::UserAgent;
+use HTTP::Request;
+use Time::HiRes;
+use JSON;
+
+my $version     = "0.1";
+my $progname    = do { $0 =~ m!([^/]+)$!; $1 };
+my $timeout     = 5;
+my %exitcode    = qw(OK 0 WARNING 1 CRITICAL 2 UNKNOWN 3);
+my $o_proto     = "http";
+my $o_host      = "127.0.0.1:9200";
+my $o_path      = "";
+my $o_response  = [ ];
+my $o_warning   = 10;
+my $o_critical  = 15;
+my $o_separator = ".";
+my ($o_data, $o_auth, $o_help, $o_verbose, $o_version);
+
+GetOptions(
+    "H|host=s"       => \$o_host,
+    "P|proto=s"      => \$o_proto,
+    "p|path=s"       => \$o_path,
+    "d|data=s"       => \$o_data,
+    "r|response=s"   => $o_response,
+    "a|auth=s"       => \$o_auth,
+    "w|warning=s"    => \$o_warning,
+    "c|critical=s"   => \$o_critical,
+    "s|separator=s"  => \$o_separator,
+    "h|help"         => \$o_help,
+    "V|verbose-help" => \$o_verbose,
+    "v|version"      => \$o_version,
+) or exit 3;
+
+if ($o_help || $o_verbose) {
+    print "\nUsage: $progname [ OPTIONS ]\n\n";
+    print "Options:\n\n";
+    print "-H, --host <addr:port>\n";
+    print "    The host and port name to connect to ES.\n";
+    print "    Default: 127.0.0.1:9200\n";
+    print "-P, --proto <protocol>\n";
+    print "    The protocol to connect to ES (http or https).\n";
+    print "    Default: http\n";
+    print "-p, -path <path>\n";
+    print "    The path to request.\n";
+    print "-d, --data <post data>\n";
+    print "    The data to send to ES.\n";
+    print "-r, --response <tree>\n";
+    print "    Check the ES content. As string a tree separated by dots\n";
+    print "    is passed. As example if you want to check the version number\n";
+    print "    of elasticsearch, then version.number=0.20.2 can be passed.\n";
+    print "    The value is used as a Perl regular expression. See the examples\n";
+    print "    for more details. Multiple checks are allowed.\n";
+    print "-a, --auth <user:password>\n";
+    print "    Auth basic username and password.\n";
+    print "-w, --warning <timeout>\n";
+    print "    Timeout in seconds to return a warning status.\n";
+    print "-c, --critical <critical>\n";
+    print "    Timeout in seconds to return a critical status.\n";
+    print "-s, --separator <string>\n";
+    print "    Which separator to use to split the value of --response.\n";
+    print "    Default: . (dot)\n";
+    print "-h, --help\n";
+    print "    Print the help.\n";
+    print "-v, --version\n";
+    print "    Print the version number.\n";
+    print "-V, --verbose-help\n";
+
+    if ($o_verbose) {
+        print "\nExamples:\n\n";
+        print "  - Check the version number and tagline.\n\n";
+        print "    As example the ES output looks like:\n\n";
+        print "      curl -XGET http://192.168.10.100:9200/?pretty=true\n";
+        print "      {\n";
+        print '        "ok" : true,', "\n";
+        print '        "status" : 200,', "\n";
+        print '        "name" : "hostname",', "\n";
+        print '        "version" : {', "\n";
+        print '          "number" : "0.20.2",', "\n";
+        print '          "snapshot_build" : false', "\n";
+        print "        },\n";
+        print '        "tagline" : "You Know, for Search"', "\n";
+        print "      }\n\n";
+        print "      $progname -H 192.168.10.100:9200 \\\n";
+        print "          -r 'version.number=0.20.2' \\\n";
+        print "          -r 'tagline=You Know, for Search'\n\n";
+        print "  - Check a deep subtree.\n\n";
+        print '    As example you want to check the following tree until "name":"test1000":', "\n\n";
+        print "      {\n";
+        print '          "hits" : {', "\n";
+        print '              "total" : 168506,', "\n";
+        print '              "max_score" : 1.0,', "\n";
+        print '              "hits" : [ {', "\n";
+        print '                  "_index" : "index",', "\n";
+        print '                  "_type" : "type",', "\n";
+        print '                  "_id" : "1",', "\n";
+        print '                  "_score" : 1.0, "_source" : {"name":"test1000"}', "\n";
+        print '              }]', "\n";
+        print "          }\n";
+        print "      }\n\n";
+        print "      $progname -H 192.168.10.100:9200 \\\n";
+        print "          -p myindex/_search \\\n";
+        print "          -r 'hits.hits.0._source.name=test\\d+'\n";
+    }
+
+    print "\n";
+    exit 3;
+}
+
+if ($o_version) {
+    print "$progname v$version\n";
+    exit 3;
+}
+
+if ($o_proto !~ /^https{0,1}\z/) {
+    print "Invalid protocol '$o_proto'\n";
+    exit 3;
+}
+
+if ($o_host !~ /^[a-zA-Z0-9\.\-:]+\z/) {
+    print "Invalid host '$o_host'\n";
+    exit 3;
+}
+
+if ($o_path) {
+    $o_path =~ s!^/!!;
+}
+
+if ($o_critical !~ /^\d+\z/) {
+    print "Invalid value for parameter --critical\n";
+    exit 3;
+}
+
+if ($o_warning !~ /^\d+\z/) {
+    print "Invalid value for parameter --warningn";
+    exit 3;
+}
+
+$timeout += $o_critical;
+
+my $lwp = LWP::UserAgent->new();
+$lwp->timeout($timeout);
+
+my $req = HTTP::Request->new(GET => "$o_proto://$o_host/$o_path");
+
+if ($o_auth) {
+    $req->authorization_basic(split /:/, $o_auth);
+}
+
+if ($o_data) {
+    $req->content($o_data);
+}
+
+my $time = Time::HiRes::gettimeofday();
+my $res = $lwp->request($req);
+$time = sprintf("%.3f", Time::HiRes::gettimeofday() - $time);
+
+if (!$res->is_success && $time <= $timeout) {
+    print "ES CRITICAL - Failed to request $o_host - ", $res->status_line, "\n";
+    exit 2;
+}
+
+my $status = "OK";
+my $message = "";
+
+if ($time > $o_critical) {
+    $status = "CRITICAL";
+} elsif ($time > $o_warning) {
+    $status = "WARNING";
+}
+
+if ($status ne "OK") {
+    print "ES $status - request to $o_host timed out after $time seconds\n";
+    exit $exitcode{$status};
+}
+
+if (@$o_response) {
+    my $response = $res->content;
+    eval { $response = JSON->new->decode($response) };
+
+    if ($@) {
+        print "ES CRITICAL - unable to de-serialize json data\n";
+        exit 2;
+    }
+
+    if (ref $response ne "HASH") {
+        print "ES CRITICAL - invalid json data structure\n";
+        exit 2;
+    }
+
+    foreach my $string (@$o_response) {
+        my ($tree, $regex) = (split /=/, $string, 2);
+        my @map = split /\Q$o_separator\E/, $tree;
+        my $last = scalar @map - 1;
+        my $ref = $response;
+
+        for (my $i=0; $i < @map; $i++) {
+            my $map = $map[$i];
+
+            if (ref $ref eq "HASH") {
+                if (!exists $ref->{$map}) {
+                    print "ES CRITICAL - hash key '$map' does not exists in json data\n";
+                    exit 2;
+                }
+            } elsif (ref $ref eq "ARRAY") {
+                if ($map =~ /^\d+\z/ && !exists $ref->[$map]) {
+                    print "ES CRITICAL - array element $map does not exists in json data\n";
+                    exit 2;
+                }
+            } elsif ($i != $last) {
+                print "ES CRITICAL - invalid data structure for key '$map'\n";
+                exit 2;
+            }
+
+            $ref = ref $ref eq "HASH" ? $ref->{$map} : $ref->[$map];
+        }
+
+        if ($ref !~ /$regex/) {
+            print "ES CRITICAL - tree check failed for '$string' - $o_host response in $time seconds\n";
+            print JSON->new->encode({ time => $time }), "\n";
+            exit 2;
+        }
+    }
+
+    print "ES OK - tree check successed - response of $o_host in $time seconds\n";
+    print JSON->new->encode({ time => $time }), "\n";
+    exit 0;
+}
+
+print "ES OK - $o_host response in $time seconds\n";
+print JSON->new->encode({ time => $time }), "\n";
+exit 0;
